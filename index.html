@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Lunar South Pole Mission Planner</title>
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.110/Build/Cesium/Cesium.js"></script>
+    <link href="https://cesium.com/downloads/cesiumjs/releases/1.110/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; font-family: 'Segoe UI', Arial, sans-serif; color: #fff; }
+        #cesiumContainer { width: 100%; height: 100%; }
+        
+        /* Sol Kontrol Paneli */
+        #uiPanel { 
+            position: absolute; top: 15px; left: 15px; 
+            background: rgba(12, 14, 22, 0.92); 
+            padding: 18px; width: 330px; border-radius: 10px; 
+            z-index: 10; border: 1px solid #2a3546; box-shadow: 0 8px 25px rgba(0,0,0,0.8);
+        }
+        h3 { margin: 0 0 10px 0; color: #4da6ff; font-size: 18px; border-bottom: 1px solid #2a3546; padding-bottom: 8px; }
+        label { display: block; margin-top: 10px; font-size: 12px; color: #9aa5b1; }
+        select, input[type="date"], button { 
+            width: 100%; margin-top: 4px; padding: 8px; 
+            border-radius: 5px; border: 1px solid #3a4659; 
+            background: #1b2230; color: #fff; box-sizing: border-box; font-size: 13px;
+        }
+        button { background: #1a73e8; border: none; font-weight: bold; cursor: pointer; margin-top: 12px; transition: 0.2s; }
+        button:hover { background: #1557b0; }
+        input[type="range"] { width: 100%; margin-top: 6px; cursor: pointer; }
+        
+        .coord-badge { font-size: 11px; color: #ffd600; margin-top: 5px; display: block; }
+        .metric-box { background: rgba(255,255,255,0.04); padding: 10px; border-radius: 6px; margin-top: 10px; font-size: 13px; border: 1px solid #252f3f; }
+        .metric-box p { margin: 6px 0; display: flex; justify-content: space-between; align-items: center; }
+        .success { color: #00e676; font-weight: bold; } 
+        .warning { color: #ffab00; font-weight: bold; }
+        .danger { color: #ff5252; font-weight: bold; }
+        
+        /* Sağ Üst Gökyüzü Radarı (Skyplot) */
+        #skyplotPanel {
+            position: absolute; top: 15px; right: 15px;
+            background: rgba(12, 14, 22, 0.92);
+            padding: 15px; border-radius: 10px; border: 1px solid #2a3546;
+            z-index: 10; text-align: center; width: 220px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.8);
+        }
+        #skyplotPanel h4 { margin: 0 0 8px 0; font-size: 14px; color: #4da6ff; }
+        canvas { background: #080a10; border-radius: 50%; border: 1px solid #3a4659; }
+
+        /* Alt 24 Saatlik Görev Çubuğu (Timeline) */
+        #timelinePanel {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(12, 14, 22, 0.92); padding: 12px 20px;
+            border-radius: 10px; border: 1px solid #2a3546; z-index: 10;
+            width: 75%; max-width: 900px; box-shadow: 0 8px 25px rgba(0,0,0,0.8);
+        }
+        .timeline-header { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; color: #ccc; }
+        #timelineBar { display: flex; height: 22px; border-radius: 4px; overflow: hidden; border: 1px solid #445; cursor: pointer; background: #11151f; }
+        .hour-block { flex: 1; border-right: 1px solid rgba(0,0,0,0.4); transition: 0.15s; position: relative; }
+        .hour-block:hover { filter: brightness(1.3); }
+        .hour-block.active-hour { outline: 2px solid #fff; z-index: 2; }
+        
+        .legend { font-size: 11px; color: #bbb; margin-top: 8px; display: flex; justify-content: space-between; }
+    </style>
+</head>
+<body>
+    <div id="cesiumContainer"></div>
+
+    <!-- Sol Kontrol Paneli -->
+    <div id="uiPanel">
+        <h3>🌙 Lunar Mission Planner</h3>
+        
+        <label>Aday İniş Alanı (Veya Haritaya Tıklayın):
+            <select id="siteSelect" onchange="changeSite()">
+                <option value="-89.9,0.0">Shackleton Crater Rim (-89.9°, 0.0°)</option>
+                <option value="-88.5,45.0">De Gerlache Rim (-88.5°, 45.0°)</option>
+                <option value="-88.0,84.0">Faustini Rim A (-88.0°, 84.0°)</option>
+                <option value="-86.0,0.0">Malapert Massif (-86.0°, 0.0°)</option>
+                <option value="custom" id="customOption" style="display:none;">Özel Seçim</option>
+            </select>
+        </label>
+        <span class="coord-badge" id="coordDisplay">Seçili Koordinat: Enlem -89.90°, Boylam 0.00°</span>
+
+        <label>Görev Tarihi: 
+            <input type="date" id="dateInput" value="2026-10-01">
+        </label>
+        
+        <button onclick="fetchNASAData()">NASA Verilerini Analiz Et (24 Saat)</button>
+
+        <label>Saat Kaydırıcısı (Time-Scrubber): <strong id="timeLabel" style="color:#4da6ff;">00:00 UTC</strong>
+            <input type="range" id="hourSlider" min="0" max="23" value="0" oninput="onSliderChange(this.value)" disabled>
+        </label>
+
+        <div class="metric-box">
+            <p><span>☀️ Güneş Yüksekliği:</span> <strong><span id="sunAlt">-</span>°</strong></p>
+            <p><span>⚡ Güç Durumu:</span> <span id="powerStatus">Bekleniyor...</span></p>
+            <p><span>🔋 Tahmini Solar Üretim:</span> <strong><span id="solarWatt">0</span> W / m²</strong></p>
+            <hr style="border-color:#252f3f;">
+            <p><span>🌍 Dünya Yüksekliği:</span> <strong><span id="earthAlt">-</span>°</strong></p>
+            <p><span>📡 DTE İletişim:</span> <span id="commsStatus">Bekleniyor...</span></p>
+            <hr style="border-color:#252f3f;">
+            <p><span>📊 24s Uygunluk Özeti:</span> <strong id="summaryText">-</strong></p>
+        </div>
+
+        <div class="legend">
+            <span><b style="color:#ffd600;">━━</b> Güneş Vektörü</span>
+            <span><b style="color:#00b0ff;">━━</b> Dünya Vektörü</span>
+        </div>
+    </div>
+
+    <!-- Sağ Üst 2D Gökyüzü Radarı -->
+    <div id="skyplotPanel">
+        <h4>🎯 Yerel Ufuk Radarı (Skyplot)</h4>
+        <canvas id="skyplotCanvas" width="190" height="190"></canvas>
+        <div style="font-size:11px; color:#9aa5b1; margin-top:6px;">
+            Dış Çember: 0° Ufuk | Merkez: 90° Tepe<br>
+            <span style="color:#ffd600;">● Güneş</span> &nbsp;|&nbsp; <span style="color:#00b0ff;">● Dünya</span>
+        </div>
+    </div>
+
+    <!-- Alt 24 Saatlik Görev Uygunluk Çubuğu -->
+    <div id="timelinePanel">
+        <div class="timeline-header">
+            <span><strong>24 Saatlik Görev Penceresi (Go / No-Go)</strong> — Saate gitmek için kutucuklara tıklayın</span>
+            <span>
+                <b style="color:#00e676;">■ Optimal (Güç+İletişim)</b> &nbsp;
+                <b style="color:#ffab00;">■ Kısıtlı (Tek Kaynak)</b> &nbsp;
+                <b style="color:#ff5252;">■ Tehlike (Karanlık/Kesik)</b>
+            </span>
+        </div>
+        <div id="timelineBar"></div>
+    </div>
+
+    <script>
+        // 1. Önce sağ üstteki radarı çizelim
+        function drawSkyplot(data) {
+            const canvas = document.getElementById('skyplotCanvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            const maxR = cx - 18;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Radar Çemberleri (0° Ufuk, 30°, 60°)
+            ctx.strokeStyle = '#2a3546';
+            ctx.lineWidth = 1;
+            [1, 0.66, 0.33].forEach(ratio => {
+                ctx.beginPath();
+                ctx.arc(cx, cy, maxR * ratio, 0, Math.PI * 2);
+                ctx.stroke();
+            });
+
+            // Kuzey-Güney / Doğu-Batı Çizgileri
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - maxR); ctx.lineTo(cx, cy + maxR);
+            ctx.moveTo(cx - maxR, cy); ctx.lineTo(cx + maxR, cy);
+            ctx.stroke();
+
+            // Yön Harfleri
+            ctx.fillStyle = '#7a869a';
+            ctx.font = '10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('N (0°)', cx, 12);
+            ctx.fillText('S (180°)', cx, canvas.height - 4);
+            ctx.fillText('E', canvas.width - 8, cy + 3);
+            ctx.fillText('W', 8, cy + 3);
+
+            if (!data) return;
+
+            function plotBody(az, el, color, label) {
+                const clampedEl = Math.max(-5, Math.min(90, el));
+                const r = maxR * (1 - (clampedEl / 90));
+                const angleRad = (az - 90) * (Math.PI / 180);
+                
+                const x = cx + r * Math.cos(angleRad);
+                const y = cy + r * Math.sin(angleRad);
+
+                ctx.beginPath();
+                ctx.arc(x, y, 6, 0, Math.PI * 2);
+                ctx.fillStyle = el >= 0 ? color : 'rgba(255, 82, 82, 0.4)';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 10px sans-serif';
+                ctx.fillText(label, x, y - 9);
+            }
+
+            plotBody(data.earth.azimuth, data.earth.elevation, '#00b0ff', 'Dünya');
+            plotBody(data.sun.azimuth, data.sun.elevation, '#ffd600', 'Güneş');
+        }
+
+        drawSkyplot(null);
+
+        // 2. CESIUM 3D KÜRE KURULUMU (Önceki çalışan yöntemin birebir aynısı)
+        const viewer = new Cesium.Viewer('cesiumContainer', {
+            baseLayer: false,
+            baseLayerPicker: false,
+            timeline: false,
+            animation: false,
+            geocoder: false,
+            homeButton: false,
+            sceneModePicker: false,
+            navigationHelpButton: false,
+            globe: new Cesium.Globe(Cesium.Ellipsoid.MOON)
+        });
+
+        viewer.scene.globe.baseColor = Cesium.Color.DARKGRAY;
+        viewer.scene.skyAtmosphere.show = false;
+        viewer.scene.globe.enableLighting = false;
+        viewer.scene.light = new Cesium.DirectionalLight({
+            direction: new Cesium.Cartesian3(1, 0, 0)
+        });
+
+        // Haritayı Yükle (Yerel moon.jpg veya yedek internet haritası)
+        Cesium.SingleTileImageryProvider.fromUrl('./moon.jpg', {
+            rectangle: Cesium.Rectangle.MAX_VALUE
+        }).then(function(provider) {
+            viewer.imageryLayers.addImageryProvider(provider);
+        }).catch(function(err) {
+            console.warn("Yerel moon.jpg bulunamadı, yedek yükleniyor...", err);
+            Cesium.SingleTileImageryProvider.fromUrl('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/moon_1024.jpg', {
+                rectangle: Cesium.Rectangle.MAX_VALUE
+            }).then(function(fallback) {
+                viewer.imageryLayers.addImageryProvider(fallback);
+            });
+        });
+
+        let currentLat = -89.9;
+        let currentLon = 0.0;
+        let hourlyData = [];
+        let sunVectorEntity = null;
+        let earthVectorEntity = null;
+        let pinEntity = null;
+
+        // Haritaya Tıklayarak Nokta Seçme
+        const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+        handler.setInputAction(function (movement) {
+            const cartesian = viewer.camera.pickEllipsoid(movement.position, Cesium.Ellipsoid.MOON);
+            if (cartesian) {
+                const cartographic = Cesium.Ellipsoid.MOON.cartesianToCartographic(cartesian);
+                currentLon = parseFloat(Cesium.Math.toDegrees(cartographic.longitude).toFixed(2));
+                currentLat = parseFloat(Cesium.Math.toDegrees(cartographic.latitude).toFixed(2));
+                
+                const customOpt = document.getElementById('customOption');
+                customOpt.style.display = 'block';
+                customOpt.text = `Özel Nokta (${currentLat}°, ${currentLon}°)`;
+                document.getElementById('siteSelect').value = 'custom';
+                
+                updateLandingPin(false);
+                if (hourlyData.length > 0) fetchNASAData();
+            }
+        }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+        function updateLandingPin(fly = true) {
+            document.getElementById('coordDisplay').innerText = `Seçili Koordinat: Enlem ${currentLat.toFixed(2)}°, Boylam ${currentLon.toFixed(2)}°`;
+            
+            if (pinEntity) viewer.entities.remove(pinEntity);
+            
+            // Noktayı tam Ay yüzeyine (Cesium.Ellipsoid.MOON) oturtuyoruz
+            const surfacePos = Cesium.Cartesian3.fromDegrees(currentLon, currentLat, 0, Cesium.Ellipsoid.MOON);
+            pinEntity = viewer.entities.add({
+                position: surfacePos,
+                point: { pixelSize: 12, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 2 },
+                label: {
+                    text: `İniş Noktası (${currentLat}°, ${currentLon}°)`,
+                    font: 'bold 13px sans-serif',
+                    pixelOffset: new Cesium.Cartesian2(0, -20),
+                    fillColor: Cesium.Color.YELLOW,
+                    showBackground: true,
+                    backgroundColor: new Cesium.Color(0, 0, 0, 0.7)
+                }
+            });
+
+            if (fly) {
+                viewer.camera.flyTo({
+                    destination: Cesium.Cartesian3.fromDegrees(currentLon, currentLat, 2500000),
+                    orientation: { heading: 0.0, pitch: Cesium.Math.toRadians(-90), roll: 0.0 },
+                    duration: 1.2
+                });
+            }
+        }
+
+        function changeSite() {
+            const val = document.getElementById('siteSelect').value;
+            if (val === 'custom') return;
+            const coords = val.split(',');
+            currentLat = parseFloat(coords[0]);
+            currentLon = parseFloat(coords[1]);
+            updateLandingPin(true);
+            if (hourlyData.length > 0) fetchNASAData();
+        }
+
+        updateLandingPin(true);
+
+        async function fetchNASAData() {
+            const selectedDate = document.getElementById('dateInput').value;
+            let startDateObj = new Date(selectedDate);
+            let stopDateObj = new Date(startDateObj);
+            stopDateObj.setDate(stopDateObj.getDate() + 1);
+            let stopDate = stopDateObj.toISOString().split('T')[0];
+
+            const apiUrl = `http://127.0.0.1:8000/api/positions?lat=${currentLat}&lon=${currentLon}&start_date=${selectedDate}&stop_date=${stopDate}&step=1h`;
+
+            try {
+                const response = await fetch(apiUrl);
+                const result = await response.json();
+                
+                if (result.status === "success" && result.data.length > 0) {
+                    hourlyData = result.data.slice(0, 24);
+                    const slider = document.getElementById('hourSlider');
+                    slider.max = hourlyData.length - 1;
+                    slider.value = 0;
+                    slider.disabled = false;
+                    
+                    buildTimelineBar();
+                    renderHour(0);
+                }
+            } catch (error) {
+                alert("API Hatası: Python FastAPI sunucunuzun (uvicorn) açık olduğundan emin olun.");
+                console.error(error);
+            }
+        }
+
+        function onSliderChange(index) {
+            if (hourlyData.length > index) {
+                renderHour(parseInt(index));
+            }
+        }
+
+        function buildTimelineBar() {
+            const bar = document.getElementById('timelineBar');
+            bar.innerHTML = '';
+            let optimalCount = 0;
+
+            hourlyData.forEach((item, idx) => {
+                const block = document.createElement('div');
+                block.className = 'hour-block';
+                
+                const sunUp = item.sun.is_visible;
+                const earthUp = item.earth.is_visible;
+
+                if (sunUp && earthUp) {
+                    block.style.background = '#00e676';
+                    optimalCount++;
+                } else if (sunUp || earthUp) {
+                    block.style.background = '#ffab00';
+                } else {
+                    block.style.background = '#ff5252';
+                }
+
+                block.title = `Saat ${idx}:00 | Güneş: ${item.sun.elevation.toFixed(1)}° | Dünya: ${item.earth.elevation.toFixed(1)}°`;
+                block.onclick = () => {
+                    document.getElementById('hourSlider').value = idx;
+                    renderHour(idx);
+                };
+                bar.appendChild(block);
+            });
+
+            document.getElementById('summaryText').innerText = `${optimalCount} / ${hourlyData.length} Saat Optimal`;
+        }
+
+        function renderHour(index) {
+            const data = hourlyData[index];
+            document.getElementById('timeLabel').innerText = (data.datetime.split(' ')[1] || `${index}:00`) + " UTC";
+
+            const blocks = document.querySelectorAll('.hour-block');
+            blocks.forEach((b, i) => b.classList.toggle('active-hour', i === index));
+
+            const sunEl = data.sun.elevation;
+            const earthEl = data.earth.elevation;
+            document.getElementById('sunAlt').innerText = sunEl.toFixed(2);
+            document.getElementById('earthAlt').innerText = earthEl.toFixed(2);
+            
+            const pwr = document.getElementById('powerStatus');
+            pwr.innerText = data.sun.is_visible ? "MÜMKÜN (Aydınlık)" : "KARANLIK BÖLGE";
+            pwr.className = data.sun.is_visible ? "success" : "danger";
+
+            let watt = 0;
+            if (sunEl > 0) {
+                const rad = Cesium.Math.toRadians(sunEl);
+                watt = Math.round(1361 * Math.cos(rad));
+            }
+            document.getElementById('solarWatt').innerText = watt;
+            
+            const com = document.getElementById('commsStatus');
+            com.innerText = data.earth.is_visible ? "AÇIK (DTE Aktif)" : "KESİLDİ";
+            com.className = data.earth.is_visible ? "success" : "danger";
+
+            const origin = Cesium.Cartesian3.fromDegrees(currentLon, currentLat, 0, Cesium.Ellipsoid.MOON);
+            const transform = Cesium.Transforms.eastNorthUpToFixedFrame(origin, Cesium.Ellipsoid.MOON);
+
+            viewer.scene.globe.enableLighting = true;
+            const sunHeading = Cesium.Math.toRadians(data.sun.azimuth);
+            const sunPitch = Cesium.Math.toRadians(sunEl);
+            const sunLocalDir = new Cesium.Cartesian3(
+                Math.cos(sunPitch) * Math.sin(sunHeading),
+                Math.cos(sunPitch) * Math.cos(sunHeading),
+                Math.sin(sunPitch)
+            );
+            const sunWorldDir = Cesium.Matrix4.multiplyByPointAsVector(transform, sunLocalDir, new Cesium.Cartesian3());
+            Cesium.Cartesian3.normalize(sunWorldDir, sunWorldDir);
+            viewer.scene.light.direction = Cesium.Cartesian3.negate(sunWorldDir, new Cesium.Cartesian3());
+
+            const earthHeading = Cesium.Math.toRadians(data.earth.azimuth);
+            const earthPitch = Cesium.Math.toRadians(earthEl);
+            const earthLocalDir = new Cesium.Cartesian3(
+                Math.cos(earthPitch) * Math.sin(earthHeading),
+                Math.cos(earthPitch) * Math.cos(earthHeading),
+                Math.sin(earthPitch)
+            );
+            const earthWorldDir = Cesium.Matrix4.multiplyByPointAsVector(transform, earthLocalDir, new Cesium.Cartesian3());
+            Cesium.Cartesian3.normalize(earthWorldDir, earthWorldDir);
+
+            const vectorLength = 600000;
+            const sunEnd = Cesium.Cartesian3.add(origin, Cesium.Cartesian3.multiplyByScalar(sunWorldDir, vectorLength, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+            const earthEnd = Cesium.Cartesian3.add(origin, Cesium.Cartesian3.multiplyByScalar(earthWorldDir, vectorLength, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+
+            if (sunVectorEntity) viewer.entities.remove(sunVectorEntity);
+            if (earthVectorEntity) viewer.entities.remove(earthVectorEntity);
+
+            sunVectorEntity = viewer.entities.add({
+                polyline: {
+                    positions: [origin, sunEnd],
+                    width: 4,
+                    material: new Cesium.PolylineArrowMaterialProperty(Cesium.Color.YELLOW)
+                }
+            });
+
+            earthVectorEntity = viewer.entities.add({
+                polyline: {
+                    positions: [origin, earthEnd],
+                    width: 4,
+                    material: new Cesium.PolylineArrowMaterialProperty(Cesium.Color.DEEPSKYBLUE)
+                }
+            });
+
+            drawSkyplot(data);
+        }
+    </script>
+</body>
+</html>
